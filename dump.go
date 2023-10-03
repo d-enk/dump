@@ -26,26 +26,23 @@ func (d *Dumper) Dump(ss ...any) *Dumper {
 	d.WriteString(d.prefix)
 
 	for _, s := range ss {
-		d.dump(d.prefix, s)
+		d.dump(d.prefix, reflect.ValueOf(s))
 		d.WriteByte(' ')
 	}
 
 	return d
 }
 
-func (d *Dumper) dump(prefix string, s any) *Dumper {
-	switch v := s.(type) {
-	case string, error:
-		d.addStr(prefix, v)
-		return d
-	}
+func (d *Dumper) dump(prefix string, v reflect.Value) *Dumper {
+	switch v.Kind() {
+	case reflect.String:
+		d.addStr(prefix, v.String())
 
-	switch v := reflect.ValueOf(s); v.Kind() {
-	case reflect.Pointer:
+	case reflect.Pointer, reflect.Interface:
 		if v.IsNil() {
-			d.dump(prefix, "<nil>")
+			d.Add("nil")
 		} else {
-			d.dump(prefix, v.Elem().Interface())
+			d.dump(prefix, v.Elem())
 		}
 
 	case reflect.Slice, reflect.Array:
@@ -55,7 +52,7 @@ func (d *Dumper) dump(prefix string, s any) *Dumper {
 			d.Addln("[")
 			for i := 0; i < v.Len(); i++ {
 				d.Add(prefix, " ")
-				d.dump(prefix+" ", v.Index(i).Interface())
+				d.dump(prefix+" ", v.Index(i))
 				d.Addln(",")
 			}
 			d.Add(prefix, "]")
@@ -68,50 +65,31 @@ func (d *Dumper) dump(prefix string, s any) *Dumper {
 			d.Addln("{")
 			for iter := v.MapRange(); iter.Next(); {
 				d.Add(prefix, " ")
-				d.dump(prefix+" ", iter.Key().Interface())
+				d.dump(prefix+" ", iter.Key())
 				d.Add(": ")
-				d.dump(prefix+" ", iter.Value().Interface())
+				d.dump(prefix+" ", iter.Value())
 				d.Addln(",")
 			}
 			d.Add(prefix, "}")
 		}
 
 	case reflect.Struct:
-
-		var fields bool
-
-		for i := 0; i < v.NumField(); i++ {
-			if fields = v.Type().Field(i).IsExported(); fields {
-				break
-			}
-		}
-
-		if fields {
+		if v.NumField() > 0 {
 			d.Addln("{")
-			for i := 0; i < v.NumField(); i++ {
-				field := v.Field(i)
 
-				fieldType := v.Type().Field(i)
-				if fieldType.IsExported() {
-					d.Add(prefix, " ", fieldType.Name, ": ")
-					d.dump(prefix+"  ", field.Interface())
-					d.Addln()
-				} else {
-					d.Addln(prefix, " ", fieldType.Name, ": <>")
-				}
+			for i := 0; i < v.NumField(); i++ {
+				fieldName := v.Type().Field(i).Name
+				d.Add(prefix, "  ", fieldName, ": ")
+				d.dump(prefix+"  ", v.FieldByName(fieldName))
+				d.Addln()
 			}
 			d.Add(prefix, "}")
-		} else if v, ok := s.(interface{ String() string }); ok {
-			d.addStr(prefix, v)
 		} else {
 			d.Add("{}")
 		}
 
-	case reflect.Interface:
-		d.dump(prefix, v.Elem())
-
 	default:
-		d.Add(fmt.Sprint(s))
+		d.Add(fmt.Sprint(v))
 	}
 
 	return d
@@ -128,20 +106,17 @@ func (d *Dumper) Addln(strs ...string) {
 	d.WriteByte('\n')
 }
 
-func (d *Dumper) addStr(prefix string, v any) {
-	str := fmt.Sprint(v)
-	stri := str
-
-	if i := strings.IndexByte(stri, '\n'); i >= 0 {
+func (d *Dumper) addStr(prefix, str string) {
+	if i := strings.IndexByte(str, '\n'); i >= 0 {
 		d.Add("\n", prefix, " `")
-		for ; i >= 0; i = strings.IndexByte(stri, '\n') {
-			d.Add(stri[:i], "\n", prefix, "  ")
-			stri = stri[i+1:]
+		for ; i >= 0; i = strings.IndexByte(str, '\n') {
+			d.Add(str[:i], "\n", prefix, "  ")
+			str = str[i+1:]
 		}
 	} else {
 		d.WriteByte('`')
 	}
-	d.Add(stri)
+	d.Add(str)
 	d.WriteByte('`')
 }
 
