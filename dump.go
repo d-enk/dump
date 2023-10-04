@@ -110,7 +110,7 @@ func (d *Dumper) Addln(strs ...string) {
 
 func (d *Dumper) addStr(prefix, str string) {
 	if i := strings.IndexByte(str, '\n'); i >= 0 {
-		d.Add("\n", prefix, " `")
+		d.Add("|\n", prefix, " `")
 		for ; i >= 0; i = strings.IndexByte(str, '\n') {
 			d.Add(str[:i], "\n", prefix, "  ")
 			str = str[i+1:]
