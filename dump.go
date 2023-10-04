@@ -23,11 +23,13 @@ func Dump(ss ...any) string {
 }
 
 func (d *Dumper) Dump(ss ...any) *Dumper {
-	d.WriteString(d.prefix)
-
-	for _, s := range ss {
-		d.dump(d.prefix, reflect.ValueOf(s))
-		d.WriteByte(' ')
+	if len(ss) > 0 {
+		d.WriteString(d.prefix)
+		d.dump(d.prefix, reflect.ValueOf(ss[0]))
+		for _, s := range ss[1:] {
+			d.WriteByte(' ')
+			d.dump(d.prefix, reflect.ValueOf(s))
+		}
 	}
 
 	return d
