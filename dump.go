@@ -1,143 +1,178 @@
 package dump
 
 import (
+	"bytes"
 	"fmt"
-	"log"
+	"io"
 	"os"
 	"reflect"
 	"strings"
 )
 
+var (
+	NestedPadding = "  "
+	LogWriter     = io.Writer(os.Stderr)
+	ChunkSize     = 1024
+)
+
+func New(writer io.Writer) *Dumper {
+	return &Dumper{writer: writer}
+}
+
 type Dumper struct {
 	prefix string
-	strings.Builder
+	writer io.Writer
+	buffer bytes.Buffer
 }
 
-func (d *Dumper) WithPrefix(prefix string) *Dumper {
-	d.prefix = prefix
-	return d
-}
+type tLog func(v ...any) tLog
 
-func Dump(ss ...any) string {
-	return (&Dumper{}).Dump(ss...).String()
-}
-
-func (d *Dumper) Dump(ss ...any) *Dumper {
-	if len(ss) > 0 {
-		d.WriteString(d.prefix)
-		d.dump(d.prefix, reflect.ValueOf(ss[0]))
-		for _, s := range ss[1:] {
-			d.WriteByte(' ')
-			d.dump(d.prefix, reflect.ValueOf(s))
+func Log(v ...any) tLog {
+	var gen func(*Dumper, ...any) tLog
+	gen = func(d *Dumper, v ...any) tLog {
+		d.Dumpln(v...)
+		return func(v ...any) tLog {
+			return gen(d.WithPrefix(NestedPadding), v...)
 		}
 	}
 
-	return d
+	return gen(New(LogWriter), v...)
 }
 
-func (d *Dumper) dump(prefix string, v reflect.Value) *Dumper {
+func Dump(v ...any) string {
+	builder := &strings.Builder{}
+	New(builder).Dump(v...)
+	return builder.String()
+}
+
+func (d Dumper) WithPrefix(prefix string) *Dumper {
+	d.prefix += prefix
+	return &d
+}
+
+func (d *Dumper) Dump(v ...any) {
+	if len(v) > 0 {
+		d.multiDump(v...)
+		d.flushBuffer()
+	}
+}
+
+func (d *Dumper) Dumpln(v ...any) {
+	if len(v) > 0 {
+		d.multiDump(v...)
+	}
+	_ = d.buffer.WriteByte('\n')
+	d.flushBuffer()
+}
+
+func (d *Dumper) multiDump(v ...any) {
+	d.append(d.prefix)
+	d.dump(d.prefix, reflect.ValueOf(v[0]), false)
+	for _, v := range v[1:] {
+		d.append(" ")
+		d.dump(d.prefix, reflect.ValueOf(v), false)
+	}
+}
+
+func (d *Dumper) dump(prefix string, v reflect.Value, isNested bool) {
 	switch v.Kind() {
 	case reflect.String:
-		d.addStr(prefix, v.String())
+		d.addMultilineString(prefix, v.String(), isNested)
+
+	case reflect.Invalid:
+		d.append("nil")
 
 	case reflect.Pointer, reflect.Interface:
 		if v.IsNil() {
-			d.Add("nil")
+			d.append("nil")
 		} else {
-			d.dump(prefix, v.Elem())
+			d.dump(prefix, v.Elem(), isNested)
 		}
 
 	case reflect.Slice, reflect.Array:
 		if v.Len() == 0 {
-			d.Add("[]")
+			d.append("[]")
 		} else {
-			d.Addln("[")
+			d.appendln("[")
+			nextPrefix := prefix + NestedPadding
 			for i := 0; i < v.Len(); i++ {
-				d.Add(prefix, " ")
-				d.dump(prefix+" ", v.Index(i))
-				d.Addln(",")
+				d.append(nextPrefix)
+				d.dump(nextPrefix, v.Index(i), false)
+				d.appendln(",")
 			}
-			d.Add(prefix, "]")
+			d.append(prefix, "]")
 		}
 
 	case reflect.Map:
 		if v.Len() == 0 {
-			d.Add("{}")
+			d.append("{}")
 		} else {
-			d.Addln("{")
+			d.appendln("{")
+			nextPrefix := prefix + NestedPadding
 			for iter := v.MapRange(); iter.Next(); {
-				d.Add(prefix, " ")
-				d.dump(prefix+" ", iter.Key())
-				d.Add(": ")
-				d.dump(prefix+" ", iter.Value())
-				d.Addln(",")
+				d.append(nextPrefix)
+				d.dump(nextPrefix, iter.Key(), true)
+				d.append(": ")
+				d.dump(nextPrefix, iter.Value(), true)
+				d.appendln(",")
 			}
-			d.Add(prefix, "}")
+			d.append(prefix, "}")
 		}
 
 	case reflect.Struct:
-		if v.NumField() > 0 {
-			d.Addln("{")
-
+		if v.NumField() == 0 {
+			d.append("{}")
+		} else {
+			d.appendln("{")
+			nextPrefix := prefix + NestedPadding
 			for i := 0; i < v.NumField(); i++ {
 				fieldName := v.Type().Field(i).Name
-				d.Add(prefix, "  ", fieldName, ": ")
-				d.dump(prefix+"  ", v.FieldByName(fieldName))
-				d.Addln()
+				d.append(nextPrefix, fieldName, ": ")
+				d.dump(nextPrefix, v.FieldByName(fieldName), true)
+				d.appendln("")
 			}
-			d.Add(prefix, "}")
-		} else {
-			d.Add("{}")
+			d.append(prefix, "}")
 		}
 
 	default:
-		d.Add(fmt.Sprint(v))
+		d.append(fmt.Sprint(v))
 	}
-
-	return d
 }
 
-func (d *Dumper) Add(strs ...string) {
+func (d *Dumper) flushBuffer() {
+	_, _ = d.buffer.WriteTo(d.writer)
+}
+
+func (d *Dumper) append(strs ...string) {
 	for _, str := range strs {
-		d.WriteString(str)
+		_, _ = d.buffer.WriteString(str)
+
+		if d.buffer.Len() >= ChunkSize {
+			d.flushBuffer()
+		}
 	}
 }
 
-func (d *Dumper) Addln(strs ...string) {
-	d.Add(strs...)
-	d.WriteByte('\n')
+func (d *Dumper) appendln(strs ...string) {
+	d.append(strs...)
+	d.append("\n")
 }
 
-func (d *Dumper) addStr(prefix, str string) {
+func (d *Dumper) addMultilineString(prefix, str string, needNewLine bool) {
 	if i := strings.IndexByte(str, '\n'); i >= 0 {
-		d.Add("|\n", prefix, " `")
+		padding := ""
+		if needNewLine {
+			d.append("|\n", prefix)
+			padding = " "
+		}
+
+		d.append(padding, "`")
 		for ; i >= 0; i = strings.IndexByte(str, '\n') {
-			d.Add(str[:i], "\n", prefix, "  ")
+			d.append(str[:i], "\n", prefix, padding, " ")
 			str = str[i+1:]
 		}
 	} else {
-		d.WriteByte('`')
+		d.append("`")
 	}
-	d.Add(str)
-	d.WriteByte('`')
-}
-
-type tLog func(s ...any) tLog
-
-var info = log.New(os.Stderr, "", log.Lmsgprefix).Println
-
-func Log(s ...any) tLog {
-	var gen func(Dumper, ...any) tLog
-	gen = func(d Dumper, ss ...any) tLog {
-		d.Dump(ss...)
-		info(d.String())
-		d.Reset()
-
-		d.prefix += "    "
-		return func(s ...any) tLog {
-			return gen(d, s...)
-		}
-	}
-
-	return gen(Dumper{}, s...)
+	d.append(str, "`")
 }
