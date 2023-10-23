@@ -138,6 +138,9 @@ func (d *Dumper) dump(prefix string, v reflect.Value, isNested bool) {
 			d.append(prefix, "}")
 		}
 
+	case reflect.Func:
+		d.append(fmt.Sprintf("func()=%v", v))
+
 	default:
 		d.append(fmt.Sprint(v))
 	}
