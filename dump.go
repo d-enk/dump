@@ -7,12 +7,13 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 )
 
 var (
 	NestedPadding = "  "
 	LogWriter     = io.Writer(os.Stderr)
-	ChunkSize     = 1024
+	logMutex      = sync.Mutex{}
 )
 
 func New(writer io.Writer) *Dumper {
@@ -30,6 +31,9 @@ type tLog func(v ...any) tLog
 func Log(v ...any) tLog {
 	var gen func(*Dumper, ...any) tLog
 	gen = func(d *Dumper, v ...any) tLog {
+		logMutex.Lock()
+		defer logMutex.Unlock()
+
 		d.Dumpln(v...)
 		return func(v ...any) tLog {
 			return gen(d.WithPrefix(NestedPadding), v...)
