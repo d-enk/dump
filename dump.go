@@ -8,22 +8,24 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"unsafe"
 )
 
 var (
 	NestedPadding = "  "
 	LogWriter     = io.Writer(os.Stderr)
+	LogChunkSize  = 1024
 	logMutex      = sync.Mutex{}
+	logBuffer     = bytes.Buffer{}
 )
 
 func New(writer io.Writer) *Dumper {
-	return &Dumper{writer: writer}
+	return &Dumper{buffer: noBuf{Writer: writer}}
 }
 
 type Dumper struct {
 	prefix string
-	writer io.Writer
-	buffer bytes.Buffer
+	buffer
 }
 
 type tLog func(v ...any) tLog
@@ -40,7 +42,11 @@ func Log(v ...any) tLog {
 		}
 	}
 
-	return gen(New(LogWriter), v...)
+	return gen(&Dumper{buffer: &buf{
+		Writer:    LogWriter,
+		chunkSize: LogChunkSize,
+		buf:       logBuffer,
+	}}, v...)
 }
 
 func Dump(v ...any) string {
@@ -54,10 +60,18 @@ func (d Dumper) WithPrefix(prefix string) *Dumper {
 	return &d
 }
 
+func (d *Dumper) WithBuffer(chunkSize int) *Dumper {
+	d.buffer = &buf{
+		Writer:    d.buffer,
+		chunkSize: chunkSize,
+	}
+	return d
+}
+
 func (d *Dumper) Dump(v ...any) {
 	if len(v) > 0 {
 		d.multiDump(v...)
-		d.flushBuffer()
+		d.buffer.flush()
 	}
 }
 
@@ -65,8 +79,8 @@ func (d *Dumper) Dumpln(v ...any) {
 	if len(v) > 0 {
 		d.multiDump(v...)
 	}
-	_ = d.buffer.WriteByte('\n')
-	d.flushBuffer()
+	_ = d.buffer.add([]byte{'\n'})
+	d.buffer.flush()
 }
 
 func (d *Dumper) multiDump(v ...any) {
@@ -146,17 +160,9 @@ func (d *Dumper) dump(prefix string, v reflect.Value, isNested bool) {
 	}
 }
 
-func (d *Dumper) flushBuffer() {
-	_, _ = d.buffer.WriteTo(d.writer)
-}
-
 func (d *Dumper) append(strs ...string) {
 	for _, str := range strs {
-		_, _ = d.buffer.WriteString(str)
-
-		if d.buffer.Len() >= ChunkSize {
-			d.flushBuffer()
-		}
+		_ = d.buffer.add(unsafe.Slice(unsafe.StringData(str), len(str)))
 	}
 }
 
@@ -182,4 +188,37 @@ func (d *Dumper) addMultilineString(prefix, str string, needNewLine bool) {
 		d.append("`")
 	}
 	d.append(str, "`")
+}
+
+type buffer interface {
+	io.Writer
+	add([]byte) error
+	flush() error
+}
+
+type noBuf struct{ io.Writer }
+
+func (b noBuf) add(bytes []byte) (err error) {
+	_, err = b.Writer.Write(bytes)
+	return
+}
+
+func (b noBuf) flush() error { return nil }
+
+type buf struct {
+	io.Writer
+	buf       bytes.Buffer
+	chunkSize int
+}
+
+func (b *buf) add(bytes []byte) (err error) {
+	if _, err = b.buf.Write(bytes); err == nil && b.buf.Len() >= b.chunkSize {
+		err = b.flush()
+	}
+	return
+}
+
+func (b *buf) flush() (err error) {
+	_, err = b.buf.WriteTo(b.Writer)
+	return
 }
