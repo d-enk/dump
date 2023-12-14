@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"unsafe"
@@ -26,6 +28,8 @@ func New(writer io.Writer) *Dumper {
 type Dumper struct {
 	prefix string
 	buffer
+
+	cache map[uintptr][]string
 }
 
 type tLog func(v ...any) tLog
@@ -71,7 +75,7 @@ func (d *Dumper) WithBuffer(chunkSize int) *Dumper {
 func (d *Dumper) Dump(v ...any) {
 	if len(v) > 0 {
 		d.multiDump(v...)
-		d.buffer.flush()
+		_ = d.buffer.flush()
 	}
 }
 
@@ -80,19 +84,64 @@ func (d *Dumper) Dumpln(v ...any) {
 		d.multiDump(v...)
 	}
 	_ = d.buffer.add([]byte{'\n'})
-	d.buffer.flush()
+	_ = d.buffer.flush()
 }
 
 func (d *Dumper) multiDump(v ...any) {
+	if len(v) == 0 {
+		return
+	}
+
+	d.cache = map[uintptr][]string{}
+
 	d.append(d.prefix)
 	d.dump(d.prefix, reflect.ValueOf(v[0]), false)
 	for _, v := range v[1:] {
 		d.append(" ")
 		d.dump(d.prefix, reflect.ValueOf(v), false)
 	}
+
+	d.cache = nil
 }
 
-func (d *Dumper) dump(prefix string, v reflect.Value, isNested bool) {
+func (d *Dumper) dump(prefix string, v reflect.Value, isNested bool, path ...string) {
+	switch v.Kind() {
+	case reflect.Slice, reflect.Map,
+		reflect.UnsafePointer,
+		reflect.Pointer:
+
+		ptr := v.Pointer()
+
+		if ptr == 0 {
+			break
+		}
+
+		cachedPath, ok := d.cache[ptr]
+
+		if !ok {
+			d.cache[ptr] = append([]string{}, path...)
+			break
+		}
+
+		l := min(len(path), len(cachedPath))
+
+		if slices.Compare(path[:l], cachedPath[:l]) == 0 {
+
+			d.append("0x", strconv.FormatUint(uint64(ptr), 16), " (")
+
+			if len(cachedPath) == 0 {
+				d.append(".")
+			} else {
+				for _, p := range cachedPath {
+					d.append(p)
+				}
+			}
+
+			d.append(")")
+			return
+		}
+	}
+
 	switch v.Kind() {
 	case reflect.String:
 		d.addMultilineString(prefix, v.String(), isNested)
@@ -104,34 +153,53 @@ func (d *Dumper) dump(prefix string, v reflect.Value, isNested bool) {
 		if v.IsNil() {
 			d.append("nil")
 		} else {
-			d.dump(prefix, v.Elem(), isNested)
+			d.dump(prefix, v.Elem(), isNested, path...)
 		}
 
-	case reflect.Slice, reflect.Array:
+	case reflect.Slice:
+		if v.IsNil() {
+			d.append("nil")
+			break
+		}
+
+		fallthrough
+	case reflect.Array:
 		if v.Len() == 0 {
 			d.append("[]")
 		} else {
 			d.appendln("[")
 			nextPrefix := prefix + NestedPadding
+			path := append(path, "[", "", "]")
+			indexPos := len(path) - 2
 			for i := 0; i < v.Len(); i++ {
 				d.append(nextPrefix)
-				d.dump(nextPrefix, v.Index(i), false)
+				path[indexPos] = strconv.FormatInt(int64(i), 10)
+				d.dump(nextPrefix, v.Index(i), false, path...)
 				d.appendln(",")
 			}
 			d.append(prefix, "]")
 		}
 
 	case reflect.Map:
-		if v.Len() == 0 {
+		switch {
+		case v.IsNil():
+			d.append("nil")
+		case v.Len() == 0:
 			d.append("{}")
-		} else {
+		default:
 			d.appendln("{")
 			nextPrefix := prefix + NestedPadding
+			nestedPath := path
+			nestedPath = append(nestedPath, "[", "", "]")
+			keyPos := len(nestedPath) - 2
 			for iter := v.MapRange(); iter.Next(); {
 				d.append(nextPrefix)
-				d.dump(nextPrefix, iter.Key(), true)
+				key := iter.Key()
+				d.dump(nextPrefix, key, true, path...)
 				d.append(": ")
-				d.dump(nextPrefix, iter.Value(), true)
+				nestedPath[keyPos] = key.String()
+				d.dump(nextPrefix, iter.Value(), true, nestedPath...)
+
 				d.appendln(",")
 			}
 			d.append(prefix, "}")
@@ -146,7 +214,9 @@ func (d *Dumper) dump(prefix string, v reflect.Value, isNested bool) {
 			for i := 0; i < v.NumField(); i++ {
 				fieldName := v.Type().Field(i).Name
 				d.append(nextPrefix, fieldName, ": ")
-				d.dump(nextPrefix, v.FieldByName(fieldName), true)
+				d.dump(nextPrefix, v.FieldByName(fieldName), true,
+					append(path, ".", fieldName)...,
+				)
 				d.appendln("")
 			}
 			d.append(prefix, "}")

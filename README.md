@@ -22,11 +22,7 @@ func main() {
  const multiline = `multi
 line`
 
- dump.Log("Title")(
-  "Nested",
- )(
-  multiline,
-  []any{
+ val := []any{
    0, "str", false, nil,
    []any{multiline},
    struct {
@@ -37,8 +33,11 @@ line`
     privateField: 1,
    },
    map[any]any{"-": multiline},
-  },
- )
+  }
+
+ dump.Log("Title")(
+  "Nested",
+ )(multiline, val)
  // Output:
  // Title
  //   Nested
